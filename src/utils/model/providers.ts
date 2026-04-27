@@ -2,6 +2,7 @@ import type { AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS } from 
 import { isEnvTruthy } from '../envUtils.js'
 
 export type APIProvider = 'firstParty' | 'bedrock' | 'vertex' | 'foundry' | 'openai'
+export type ProviderRetryBucket = APIProvider | 'firstPartyProxy'
 
 export function getAPIProvider(): APIProvider {
   return isEnvTruthy(process.env.CLAUDE_CODE_USE_BEDROCK)
@@ -38,5 +39,45 @@ export function isFirstPartyAnthropicBaseUrl(): boolean {
     return allowedHosts.includes(host)
   } catch {
     return false
+  }
+}
+
+/**
+ * "Official provider config" means built-in provider integrations.
+ * A custom ANTHROPIC_BASE_URL relay/proxy is treated as non-official retry mode.
+ */
+export function isOfficialProviderRequest(): boolean {
+  const provider = getAPIProvider()
+  if (provider !== 'firstParty') {
+    return true
+  }
+  return isFirstPartyAnthropicBaseUrl()
+}
+
+export function isNonOfficialProviderRequest(): boolean {
+  return !isOfficialProviderRequest()
+}
+
+export function getProviderRetryBucket(): ProviderRetryBucket {
+  const provider = getAPIProvider()
+  if (provider === 'firstParty' && !isFirstPartyAnthropicBaseUrl()) {
+    return 'firstPartyProxy'
+  }
+  return provider
+}
+
+export function getProviderBaseUrl(): string | null {
+  const provider = getAPIProvider()
+  switch (provider) {
+    case 'firstParty':
+      return process.env.ANTHROPIC_BASE_URL ?? null
+    case 'bedrock':
+      return process.env.ANTHROPIC_BEDROCK_BASE_URL ?? null
+    case 'vertex':
+      return process.env.ANTHROPIC_VERTEX_BASE_URL ?? null
+    case 'foundry':
+      return process.env.ANTHROPIC_FOUNDRY_BASE_URL ?? null
+    case 'openai':
+      return null
   }
 }

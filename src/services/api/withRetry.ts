@@ -11,7 +11,10 @@ import { isAwsCredentialsProviderError } from 'src/utils/aws.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from 'src/utils/log.js'
 import { createSystemAPIErrorMessage } from 'src/utils/messages.js'
-import { getAPIProviderForStatsig } from 'src/utils/model/providers.js'
+import {
+  getAPIProviderForStatsig,
+  isNonOfficialProviderRequest,
+} from 'src/utils/model/providers.js'
 import {
   clearApiKeyHelperCache,
   clearAwsCredentialsCache,
@@ -40,6 +43,12 @@ import {
   type AnalyticsMetadata_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   logEvent,
 } from '../analytics/index.js'
+import {
+  appendProviderApiErrorLog,
+  getNonOfficialProviderRetryContext,
+  matchProviderApiErrorBlacklist,
+  NON_OFFICIAL_PROVIDER_RETRY_DELAY_MS,
+} from './nonOfficialProviderRetry.js'
 import {
   checkMockRateLimitError,
   isMockRateLimitError,
@@ -177,6 +186,9 @@ export async function* withRetry<T>(
   options: RetryOptions,
 ): AsyncGenerator<SystemAPIErrorMessage, T> {
   const maxRetries = getMaxRetries(options)
+  const useNonOfficialProviderRetry = isNonOfficialProviderRequest()
+  const nonOfficialProviderRetryContext =
+    getNonOfficialProviderRetryContext(options.model)
   const retryContext: RetryContext = {
     model: options.model,
     thinkingConfig: options.thinkingConfig,
@@ -257,6 +269,43 @@ export async function* withRetry<T>(
         `API error (attempt ${attempt}/${maxRetries + 1}): ${error instanceof APIError ? `${error.status} ${error.message}` : errorMessage(error)}`,
         { level: 'error' },
       )
+
+      if (useNonOfficialProviderRetry) {
+        if (error instanceof APIUserAbortError) {
+          throw error
+        }
+
+        const blacklistMatch = await matchProviderApiErrorBlacklist(
+          error,
+          nonOfficialProviderRetryContext,
+        )
+        if (blacklistMatch) {
+          logForDebugging(
+            `Provider API error matched blacklist rule '${blacklistMatch.id}'`,
+          )
+          throw new CannotRetryError(error, retryContext)
+        }
+
+        await appendProviderApiErrorLog({
+          error,
+          attempt,
+          context: nonOfficialProviderRetryContext,
+        })
+
+        if (error instanceof APIError) {
+          yield createSystemAPIErrorMessage(
+            error,
+            NON_OFFICIAL_PROVIDER_RETRY_DELAY_MS,
+            attempt,
+            maxRetries,
+          )
+        }
+        await sleep(NON_OFFICIAL_PROVIDER_RETRY_DELAY_MS, options.signal, {
+          abortError,
+        })
+        if (attempt >= maxRetries) attempt = maxRetries
+        continue
+      }
 
       // Fast mode fallback: on 429/529, either wait and retry (short delays)
       // or fall back to standard speed (long delays) to avoid cache thrashing.
