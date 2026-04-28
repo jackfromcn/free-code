@@ -58,7 +58,7 @@ import { extractConnectionErrorDetails } from './errorUtils.js'
 
 const abortError = () => new APIUserAbortError()
 
-const DEFAULT_MAX_RETRIES = 10
+const DEFAULT_MAX_RETRIES = 9999
 const FLOOR_OUTPUT_TOKENS = 3000
 const MAX_529_RETRIES = 3
 export const BASE_DELAY_MS = 500
@@ -303,7 +303,9 @@ export async function* withRetry<T>(
         await sleep(NON_OFFICIAL_PROVIDER_RETRY_DELAY_MS, options.signal, {
           abortError,
         })
-        if (attempt >= maxRetries) attempt = maxRetries
+        // Clamp attempt so the for-loop continues indefinitely for transient errors.
+        // Use maxRetries - 1 so that after the loop's attempt++, we stay at maxRetries.
+        if (attempt >= maxRetries) attempt = maxRetries - 1
         continue
       }
 
@@ -552,7 +554,8 @@ export async function* withRetry<T>(
         }
         // Clamp so the for-loop never terminates. Backoff uses the separate
         // persistentAttempt counter which keeps growing to the 5-min cap.
-        if (attempt >= maxRetries) attempt = maxRetries
+        // Use maxRetries - 1 so that after the loop's attempt++, we stay at maxRetries.
+        if (attempt >= maxRetries) attempt = maxRetries - 1
       } else {
         if (error instanceof APIError) {
           yield createSystemAPIErrorMessage(error, delayMs, attempt, maxRetries)
