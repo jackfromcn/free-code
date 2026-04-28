@@ -22,6 +22,10 @@ import {
   logEvent,
 } from 'src/services/analytics/index.js'
 import {
+  type ImageReplacementRecord,
+  convertMessageImageBlocks,
+} from 'src/utils/imageReferenceStorage.js'
+import {
   getOriginalCwd,
   getPlanSlugCache,
   getPromptId,
@@ -1022,6 +1026,9 @@ class Project {
       const sessionId = getSessionId()
       const slug = getPlanSlugCache().get(sessionId)
 
+      // Collect image replacements for this batch
+      const imageReplacements: ImageReplacementRecord[] = []
+
       for (const message of messages) {
         const isCompactBoundary = isCompactBoundaryMessage(message)
 
@@ -1036,6 +1043,34 @@ class Project {
           effectiveParentUuid = message.sourceToolAssistantUUID
         }
 
+        // Convert image blocks to references before storing
+        let processedMessage = message
+        if (
+          message.type === 'user' &&
+          Array.isArray(message.message.content)
+        ) {
+          // Find tool_use_id for tool_result blocks
+          const toolUseId = 'tool_use_id' in message.message
+            ? (message.message.tool_use_id as string)
+            : message.uuid
+
+          const result = await convertMessageImageBlocks(
+            message.message.content,
+            sessionId,
+            toolUseId,
+          )
+          if (result.replacements.length > 0) {
+            processedMessage = {
+              ...message,
+              message: {
+                ...message.message,
+                content: result.content,
+              },
+            }
+            imageReplacements.push(...result.replacements)
+          }
+        }
+
         const transcriptMessage: TranscriptMessage = {
           parentUuid: isCompactBoundary ? null : effectiveParentUuid,
           logicalParentUuid: isCompactBoundary ? parentUuid : undefined,
@@ -1043,9 +1078,9 @@ class Project {
           teamName: teamInfo?.teamName,
           agentName: teamInfo?.agentName,
           promptId:
-            message.type === 'user' ? (getPromptId() ?? undefined) : undefined,
+            processedMessage.type === 'user' ? (getPromptId() ?? undefined) : undefined,
           agentId,
-          ...message,
+          ...processedMessage,
           // Session-stamp fields MUST come after the spread. On --fork-session
           // and --resume, messages arrive as SerializedMessage (carries source
           // sessionId/cwd/etc. because removeExtraFields only strips parentUuid
@@ -1063,9 +1098,22 @@ class Project {
           slug,
         }
         await this.appendEntry(transcriptMessage)
-        if (isChainParticipant(message)) {
-          parentUuid = message.uuid
+        if (isChainParticipant(processedMessage)) {
+          parentUuid = processedMessage.uuid
         }
+      }
+
+      // Write image replacement records for resume reconstruction
+      if (imageReplacements.length > 0) {
+        await this.insertContentReplacement(
+          imageReplacements.map(r => ({
+            kind: 'image-reference' as const,
+            toolUseId: r.toolUseId,
+            blockIndex: r.blockIndex,
+            replacement: r.replacement,
+          })),
+          agentId,
+        )
       }
 
       // Cache this turn's user prompt for reAppendSessionMetadata —

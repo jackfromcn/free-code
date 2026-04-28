@@ -652,19 +652,27 @@ export const FileReadTool = buildTool({
   mapToolResultToToolResultBlockParam(data, toolUseID) {
     switch (data.type) {
       case 'image': {
+        // Include sourcePath as a hint for image reference storage
+        const imageBlock: {
+          type: 'image'
+          source: { type: 'base64'; data: string; media_type: string }
+          _sourcePath?: string
+        } = {
+          type: 'image',
+          source: {
+            type: 'base64',
+            data: data.file.base64,
+            media_type: data.file.type,
+          },
+        }
+        // Preserve sourcePath for image reference conversion (internal use, not sent to API)
+        if (data.file.sourcePath) {
+          imageBlock._sourcePath = data.file.sourcePath
+        }
         return {
           tool_use_id: toolUseID,
           type: 'tool_result',
-          content: [
-            {
-              type: 'image',
-              source: {
-                type: 'base64',
-                data: data.file.base64,
-                media_type: data.file.type,
-              },
-            },
-          ],
+          content: [imageBlock],
         }
       }
       case 'notebook':
@@ -778,6 +786,7 @@ type ImageResult = {
     type: Base64ImageSource['media_type']
     originalSize: number
     dimensions?: ImageDimensions
+    sourcePath?: string // Original file path for image reference storage
   }
 }
 
@@ -786,6 +795,7 @@ function createImageResponse(
   mediaType: string,
   originalSize: number,
   dimensions?: ImageDimensions,
+  sourcePath?: string,
 ): ImageResult {
   return {
     type: 'image',
@@ -794,6 +804,7 @@ function createImageResponse(
       type: `image/${mediaType}` as Base64ImageSource['media_type'],
       originalSize,
       dimensions,
+      sourcePath,
     },
   }
 }
@@ -1126,11 +1137,12 @@ export async function readImageWithTokenBudget(
       resized.mediaType,
       originalSize,
       resized.dimensions,
+      filePath,
     )
   } catch (e) {
     if (e instanceof ImageResizeError) throw e
     logError(e)
-    result = createImageResponse(imageBuffer, detectedFormat, originalSize)
+    result = createImageResponse(imageBuffer, detectedFormat, originalSize, undefined, filePath)
   }
 
   // Check if it fits in token budget
@@ -1149,6 +1161,7 @@ export async function readImageWithTokenBudget(
           base64: compressed.base64,
           type: compressed.mediaType,
           originalSize,
+          sourcePath: filePath,
         },
       }
     } catch (e) {
@@ -1171,10 +1184,10 @@ export async function readImageWithTokenBudget(
           .jpeg({ quality: 20 })
           .toBuffer()
 
-        return createImageResponse(fallbackBuffer, 'jpeg', originalSize)
+        return createImageResponse(fallbackBuffer, 'jpeg', originalSize, undefined, filePath)
       } catch (error) {
         logError(error)
-        return createImageResponse(imageBuffer, detectedFormat, originalSize)
+        return createImageResponse(imageBuffer, detectedFormat, originalSize, undefined, filePath)
       }
     }
   }

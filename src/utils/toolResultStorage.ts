@@ -510,7 +510,7 @@ function hasImageBlock(
   return (
     Array.isArray(content) &&
     content.some(
-      b => typeof b === 'object' && 'type' in b && b.type === 'image',
+      b => typeof b === 'object' && 'type' in b && (b.type === 'image' || b.type === 'image_reference'),
     )
   )
 }

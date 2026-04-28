@@ -78,6 +78,7 @@ import {
   ensureToolResultPairing,
   normalizeContentFromAPI,
   normalizeMessagesForAPI,
+  restoreImageReferencesInMessages,
   stripAdvisorBlocks,
   stripCallerFieldFromAssistantMessage,
   stripToolReferenceBlocksFromUserMessage,
@@ -1265,6 +1266,9 @@ async function* queryModel(
   queryCheckpoint('query_message_normalization_start')
   let messagesForAPI = normalizeMessagesForAPI(messages, filteredTools)
   queryCheckpoint('query_message_normalization_end')
+
+  // Restore image_reference blocks to base64 image blocks before sending to API
+  messagesForAPI = await restoreImageReferencesInMessages(messagesForAPI)
 
   // Model-specific post-processing: strip tool-search-specific fields if the
   // selected model doesn't support tool search.

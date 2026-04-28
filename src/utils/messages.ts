@@ -21,6 +21,11 @@ import {
 } from 'src/services/analytics/index.js'
 import { sanitizeToolNameForAnalytics } from 'src/services/analytics/metadata.js'
 import type { AgentId } from 'src/types/ids.js'
+import {
+  type ImageReferenceBlock,
+  isImageReferenceBlock,
+  restoreImageFromReference,
+} from 'src/utils/imageReferenceStorage.js'
 import { companionIntroText } from '../buddy/prompt.js'
 import { NO_CONTENT_MESSAGE } from '../constants/messages.js'
 import { OUTPUT_STYLE_CONFIG } from '../constants/outputStyles.js'
@@ -1981,6 +1986,80 @@ function relocateToolReferenceSiblings(
         ],
       },
     }
+  }
+
+  return result
+}
+
+/**
+ * Restore image_reference blocks to base64 image blocks.
+ * Called before sending messages to API.
+ * This is a synchronous version that handles image references inline.
+ */
+function restoreImageReferencesInContent(
+  content: ContentBlockParam[],
+): ContentBlockParam[] {
+  return content.map(block => {
+    if (isImageReferenceBlock(block)) {
+      // For now, return a placeholder text block
+      // The actual async restoration should happen in a pre-API hook
+      // This is a fallback for synchronous code paths
+      return {
+        type: 'text',
+        text: `[Image: ${block.summary}]`,
+      } as TextBlockParam
+    }
+    return block
+  })
+}
+
+/**
+ * Async version: Restore image_reference blocks to base64 image blocks.
+ * Should be called before sending messages to API.
+ */
+export async function restoreImageReferencesInMessages(
+  messages: (UserMessage | AssistantMessage)[],
+): Promise<(UserMessage | AssistantMessage)[]> {
+  const result: (UserMessage | AssistantMessage)[] = []
+
+  for (const message of messages) {
+    if (message.type === 'user') {
+      const content = message.message.content
+      if (Array.isArray(content)) {
+        const restoredContent: ContentBlockParam[] = []
+        let hasChanges = false
+
+        for (const block of content) {
+          if (isImageReferenceBlock(block)) {
+            const restored = await restoreImageFromReference(block)
+            if (restored) {
+              restoredContent.push(restored)
+            } else {
+              // Fallback to text if image file not found
+              restoredContent.push({
+                type: 'text',
+                text: `[Image: ${block.summary}]`,
+              } as TextBlockParam)
+            }
+            hasChanges = true
+          } else {
+            restoredContent.push(block)
+          }
+        }
+
+        if (hasChanges) {
+          result.push({
+            ...message,
+            message: {
+              ...message.message,
+              content: restoredContent,
+            },
+          })
+          continue
+        }
+      }
+    }
+    result.push(message)
   }
 
   return result
