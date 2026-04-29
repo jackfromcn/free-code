@@ -141,6 +141,13 @@ const SKIP_FIRST_PROMPT_PATTERN =
  * messages on resume (see #14373, #23537).
  */
 export function isTranscriptMessage(entry: Entry): entry is TranscriptMessage {
+  // Skip api_retry system messages - they are ephemeral retry status updates
+  // that should not be persisted to session. Without this, infinite retries
+  // (e.g., DEFAULT_MAX_RETRIES=9999 for non-Anthropic providers) would bloat
+  // session files with thousands of retry messages.
+  if (entry.type === 'system' && entry.subtype === 'api_retry') {
+    return false
+  }
   return (
     entry.type === 'user' ||
     entry.type === 'assistant' ||
