@@ -141,11 +141,14 @@ const SKIP_FIRST_PROMPT_PATTERN =
  * messages on resume (see #14373, #23537).
  */
 export function isTranscriptMessage(entry: Entry): entry is TranscriptMessage {
-  // Skip api_retry system messages - they are ephemeral retry status updates
-  // that should not be persisted to session. Without this, infinite retries
-  // (e.g., DEFAULT_MAX_RETRIES=9999 for non-Anthropic providers) would bloat
-  // session files with thousands of retry messages.
-  if (entry.type === 'system' && entry.subtype === 'api_retry') {
+  // Skip api_error and api_retry system messages - they are ephemeral retry
+  // status updates that should not be persisted to session. Without this,
+  // infinite retries (e.g., DEFAULT_MAX_RETRIES=9999 for non-Anthropic providers)
+  // would bloat session files with thousands of retry messages.
+  // NOTE: We filter BOTH api_error (the subtype written by createSystemAPIErrorMessage)
+  // and api_retry (the subtype yielded by QueryEngine for SDK consumers) to ensure
+  // these ephemeral messages never persist regardless of which code path writes them.
+  if (entry.type === 'system' && (entry.subtype === 'api_error' || entry.subtype === 'api_retry')) {
     return false
   }
   return (
@@ -4405,6 +4408,11 @@ export async function loadAllSubagentTranscriptsFromDisk(): Promise<{
 // without awaiting recordTranscript's return value (race-free hint tracking).
 export function isLoggableMessage(m: Message): boolean {
   if (m.type === 'progress') return false
+  // Skip api_error and api_retry system messages - they are ephemeral retry
+  // status updates that should not be persisted to session.
+  if (m.type === 'system' && (m.subtype === 'api_error' || m.subtype === 'api_retry')) {
+    return false
+  }
   // IMPORTANT: We deliberately filter out most attachments for non-ants because
   // they have sensitive info for training that we don't want exposed to the public.
   // When enabled, we allow hook_additional_context through since it contains

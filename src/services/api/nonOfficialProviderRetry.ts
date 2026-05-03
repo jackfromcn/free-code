@@ -25,6 +25,8 @@ export type ProviderApiErrorBlacklistRule = {
   type: 'exact' | 'substring'
   pattern: string
   reason?: string
+  /** If true, trigger auto-compaction instead of hard failure */
+  autoCompact?: boolean
 }
 
 type ProviderApiErrorBlacklist = {
@@ -78,6 +80,33 @@ const DEFAULT_BLACKLIST: ProviderApiErrorBlacklist = {
         type: 'substring',
         pattern: 'insufficient_quota',
         reason: 'quota stop',
+      },
+      {
+        id: 'insufficient-user-quota',
+        type: 'substring',
+        pattern: 'insufficient_user_quota',
+        reason: 'quota stop',
+      },
+      {
+        id: 'context-length-exceeded',
+        type: 'substring',
+        pattern: 'context length',
+        reason: 'context limit',
+        autoCompact: true,
+      },
+      {
+        id: 'input-length-exceeded',
+        type: 'substring',
+        pattern: 'input length',
+        reason: 'context limit',
+        autoCompact: true,
+      },
+      {
+        id: 'prompt-too-long',
+        type: 'substring',
+        pattern: 'prompt is too long',
+        reason: 'context limit',
+        autoCompact: true,
       },
       {
         id: 'organization-disabled',

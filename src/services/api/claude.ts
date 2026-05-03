@@ -253,6 +253,7 @@ import {
   CannotRetryError,
   FallbackTriggeredError,
   is529Error,
+  PromptTooLongError,
   type RetryContext,
   withRetry,
 } from './withRetry.js'
@@ -2762,6 +2763,22 @@ async function* queryModel(
       if (errorFromRetry instanceof CannotRetryError) {
         error = errorFromRetry.originalError
         errorModel = errorFromRetry.retryContext.model
+      }
+
+      // Handle PromptTooLongError - trigger reactive compaction
+      if (errorFromRetry instanceof PromptTooLongError) {
+        logForDebugging(
+          'Prompt too long error from non-official provider, triggering reactive compaction',
+          { level: 'warn' },
+        )
+        // Yield a special error message that will be recognized by query.ts
+        // as a prompt-too-long condition
+        yield createAssistantAPIErrorMessage({
+          content: 'Prompt is too long',
+          error: 'invalid_request',
+        })
+        releaseStreamResources()
+        return
       }
 
       // Extract quota status from error headers if it's a rate limit error

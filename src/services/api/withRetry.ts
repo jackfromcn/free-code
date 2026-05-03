@@ -166,6 +166,26 @@ export class CannotRetryError extends Error {
   }
 }
 
+/**
+ * Thrown when a prompt-too-long error is received from a non-official provider.
+ * This error signals that reactive compaction should be triggered instead of
+ * hard-failing the request.
+ */
+export class PromptTooLongError extends Error {
+  constructor(
+    public readonly originalError: unknown,
+    public readonly retryContext: RetryContext,
+  ) {
+    const message = errorMessage(originalError)
+    super(message)
+    this.name = 'PromptTooLongError'
+
+    if (originalError instanceof Error && originalError.stack) {
+      this.stack = originalError.stack
+    }
+  }
+}
+
 export class FallbackTriggeredError extends Error {
   constructor(
     public readonly originalModel: string,
@@ -283,6 +303,11 @@ export async function* withRetry<T>(
           logForDebugging(
             `Provider API error matched blacklist rule '${blacklistMatch.id}'`,
           )
+          // If autoCompact flag is set, throw a special error that triggers
+          // reactive compaction instead of hard failure
+          if (blacklistMatch.autoCompact) {
+            throw new PromptTooLongError(error, retryContext)
+          }
           throw new CannotRetryError(error, retryContext)
         }
 
