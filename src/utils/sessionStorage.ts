@@ -95,7 +95,13 @@ import {
 } from './sessionStoragePortable.js'
 import { getSettings_DEPRECATED } from './settings/settings.js'
 import { jsonParse, jsonStringify } from './slowOperations.js'
-import type { ContentReplacementRecord } from './toolResultStorage.js'
+import {
+  buildLargeToolResultMessage,
+  isContentAlreadyCompacted,
+  persistToolResult,
+  type ContentReplacementRecord,
+  TRANSCRIPT_TOOL_RESULT_PERSIST_THRESHOLD,
+} from './toolResultStorage.js'
 import { validateUuid } from './uuid.js'
 
 // Cache MACRO.VERSION at module level to work around bun --define bug in async contexts
@@ -207,6 +213,85 @@ const EPHEMERAL_PROGRESS_TYPES = new Set([
 ])
 export function isEphemeralToolProgress(dataType: unknown): boolean {
   return typeof dataType === 'string' && EPHEMERAL_PROGRESS_TYPES.has(dataType)
+}
+
+export async function buildTranscriptToolResultReplacement(
+  content: string,
+  toolUseId: string,
+): Promise<{ content: string; originalSize: number } | null> {
+  const result = await persistToolResult(content, toolUseId)
+  if ('error' in result) {
+    return null
+  }
+  return {
+    content: buildLargeToolResultMessage(result),
+    originalSize: result.originalSize,
+  }
+}
+
+export async function sanitizeTranscriptToolResultMessage(
+  message: UserMessage,
+): Promise<{
+  message: UserMessage
+  replacements: ContentReplacementRecord[]
+}> {
+  if (!Array.isArray(message.message.content)) {
+    return { message, replacements: [] }
+  }
+
+  let changed = false
+  const replacements: ContentReplacementRecord[] = []
+  const content = await Promise.all(
+    message.message.content.map(async block => {
+      if (
+        block.type !== 'tool_result' ||
+        !block.content ||
+        typeof block.content !== 'string'
+      ) {
+        return block
+      }
+      if (isContentAlreadyCompacted(block.content)) {
+        return block
+      }
+      if (block.content.length <= TRANSCRIPT_TOOL_RESULT_PERSIST_THRESHOLD) {
+        return block
+      }
+
+      const replacement = await buildTranscriptToolResultReplacement(
+        block.content,
+        block.tool_use_id,
+      )
+      if (!replacement) {
+        return block
+      }
+
+      changed = true
+      replacements.push({
+        kind: 'tool-result',
+        toolUseId: block.tool_use_id,
+        replacement: replacement.content,
+      })
+      return {
+        ...block,
+        content: replacement.content,
+      }
+    }),
+  )
+
+  if (!changed) {
+    return { message, replacements: [] }
+  }
+
+  return {
+    message: {
+      ...message,
+      message: {
+        ...message.message,
+        content,
+      },
+    },
+    replacements,
+  }
 }
 
 export function getProjectsDir(): string {
@@ -1038,6 +1123,7 @@ class Project {
 
       // Collect image replacements for this batch
       const imageReplacements: ImageReplacementRecord[] = []
+      const toolResultReplacements: ContentReplacementRecord[] = []
 
       for (const message of messages) {
         const isCompactBoundary = isCompactBoundaryMessage(message)
@@ -1059,21 +1145,27 @@ class Project {
           message.type === 'user' &&
           Array.isArray(message.message.content)
         ) {
+          const sanitized = await sanitizeTranscriptToolResultMessage(message)
+          processedMessage = sanitized.message
+          if (sanitized.replacements.length > 0) {
+            toolResultReplacements.push(...sanitized.replacements)
+          }
+
           // Find tool_use_id for tool_result blocks
-          const toolUseId = 'tool_use_id' in message.message
-            ? (message.message.tool_use_id as string)
-            : message.uuid
+          const toolUseId = 'tool_use_id' in processedMessage.message
+            ? (processedMessage.message.tool_use_id as string)
+            : processedMessage.uuid
 
           const result = await convertMessageImageBlocks(
-            message.message.content,
+            processedMessage.message.content,
             sessionId,
             toolUseId,
           )
           if (result.replacements.length > 0) {
             processedMessage = {
-              ...message,
+              ...processedMessage,
               message: {
-                ...message.message,
+                ...processedMessage.message,
                 content: result.content,
               },
             }
@@ -1124,6 +1216,9 @@ class Project {
           })),
           agentId,
         )
+      }
+      if (toolResultReplacements.length > 0) {
+        await this.insertContentReplacement(toolResultReplacements, agentId)
       }
 
       // Cache this turn's user prompt for reAppendSessionMetadata —

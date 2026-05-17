@@ -42,6 +42,9 @@ export const TOOL_RESULT_CLEARED_MESSAGE = '[Old tool result content cleared]'
  */
 const PERSIST_THRESHOLD_OVERRIDE_FLAG = 'tengu_satin_quoll'
 
+export const TRANSCRIPT_TOOL_RESULT_PERSIST_THRESHOLD =
+  DEFAULT_MAX_RESULT_SIZE_CHARS
+
 /**
  * Resolve the effective persistence threshold for a tool.
  * GrowthBook override wins when present; otherwise falls back to the declared
@@ -495,7 +498,7 @@ type CandidatePartition = {
   fresh: ToolResultCandidate[]
 }
 
-function isContentAlreadyCompacted(
+export function isContentAlreadyCompacted(
   content: ToolResultBlockParam['content'],
 ): boolean {
   // All budget-produced content starts with the tag (buildLargeToolResultMessage).
@@ -725,15 +728,22 @@ function replaceToolResultContents(
   })
 }
 
-async function buildReplacement(
-  candidate: ToolResultCandidate,
+export async function buildToolResultReplacement(
+  content: NonNullable<ToolResultBlockParam['content']>,
+  toolUseId: string,
 ): Promise<{ content: string; originalSize: number } | null> {
-  const result = await persistToolResult(candidate.content, candidate.toolUseId)
+  const result = await persistToolResult(content, toolUseId)
   if (isPersistError(result)) return null
   return {
     content: buildLargeToolResultMessage(result),
     originalSize: result.originalSize,
   }
+}
+
+async function buildReplacement(
+  candidate: ToolResultCandidate,
+): Promise<{ content: string; originalSize: number } | null> {
+  return buildToolResultReplacement(candidate.content, candidate.toolUseId)
 }
 
 /**
