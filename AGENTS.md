@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## Common commands
 
@@ -48,7 +48,7 @@ This fork supports multiple API providers. Set the corresponding environment var
 - **Tool registry**: `src/tools.ts` registers agent tools (Bash, Read, Edit, Agent, etc.). Tools are constructed with Zod schemas for parameter validation. Implementations live in `src/tools/`.
 - **Query engine**: `src/QueryEngine.ts` coordinates message flow, tool use, compaction, and model invocation. It handles streaming responses, permission requests, and tool execution.
 - **Core subsystems**:
-  - `src/services/`: API clients (`claude.ts`, `codex.ts`), OAuth flows, MCP integration, analytics stubs (telemetry removed)
+  - `src/services/`: API clients (`Codex.ts`, `codex.ts`), OAuth flows, MCP integration, analytics stubs (telemetry removed)
   - `src/state/AppState.ts`: central app state store using React context
   - `src/hooks/`: React hooks for UI components and flow control
   - `src/components/`: Ink/React terminal UI components

@@ -41,13 +41,29 @@ export type ImageReferenceBlock = {
 }
 
 /**
- * Image replacement record for resume reconstruction
+ * Document reference block - stored in session instead of base64
+ * For PDFs and other base64 document blocks nested in tool_results.
+ */
+export type DocumentReferenceBlock = {
+  type: 'document_reference'
+  path: string
+  summary: string
+  metadata: {
+    media_type: string // e.g. 'application/pdf'
+    original_size_bytes: number
+  }
+  original_type: 'tool_result_document'
+}
+
+/**
+ * Content replacement record for resume reconstruction
  */
 export type ImageReplacementRecord = {
-  kind: 'image-reference'
+  kind: 'image-reference' | 'document-reference'
   toolUseId: string
   blockIndex: number
-  replacement: ImageReferenceBlock
+  subIndex?: number // index within tool_result.content for nested blocks
+  replacement: ImageReferenceBlock | DocumentReferenceBlock
 }
 
 /**
@@ -68,6 +84,39 @@ export function isImageBlock(block: unknown): block is {
 }
 
 /**
+ * Check if a content block is a base64 document block (e.g. PDF)
+ */
+export function isDocumentBlock(block: unknown): block is {
+  type: 'document'
+  source: { type: 'base64'; data: string; media_type: string }
+} {
+  if (typeof block !== 'object' || block === null) return false
+  const b = block as Record<string, unknown>
+  return (
+    b.type === 'document' &&
+    typeof b.source === 'object' &&
+    b.source !== null &&
+    (b.source as Record<string, unknown>).type === 'base64'
+  )
+}
+
+/**
+ * Check if a content block is a tool_result block that may contain nested media
+ */
+export function isToolResultBlock(block: unknown): block is {
+  type: 'tool_result'
+  content: unknown[]
+  tool_use_id: string
+} {
+  if (typeof block !== 'object' || block === null) return false
+  const b = block as Record<string, unknown>
+  return (
+    b.type === 'tool_result' &&
+    Array.isArray(b.content)
+  )
+}
+
+/**
  * Check if a content block is an image reference block
  */
 export function isImageReferenceBlock(
@@ -79,19 +128,33 @@ export function isImageReferenceBlock(
 }
 
 /**
- * Check if content contains any image blocks (base64 or reference)
+ * Check if a content block is a document reference block
+ */
+export function isDocumentReferenceBlock(
+  block: unknown,
+): block is DocumentReferenceBlock {
+  if (typeof block !== 'object' || block === null) return false
+  const b = block as Record<string, unknown>
+  return b.type === 'document_reference'
+}
+
+/**
+ * Check if content contains any media blocks (base64 or reference, including nested in tool_result)
  */
 export function hasImageContent(
   content: unknown,
 ): boolean {
   if (!Array.isArray(content)) return false
-  return content.some(
-    block =>
-      typeof block === 'object' &&
-      block !== null &&
-      'type' in block &&
-      (block.type === 'image' || block.type === 'image_reference'),
-  )
+  return content.some(block => {
+    if (typeof block !== 'object' || block === null || !('type' in block)) return false
+    if (block.type === 'image' || block.type === 'image_reference') return true
+    if (block.type === 'document' || block.type === 'document_reference') return true
+    // Check nested content inside tool_result
+    if (block.type === 'tool_result' && Array.isArray((block as Record<string, unknown>).content)) {
+      return hasImageContent((block as Record<string, unknown>).content)
+    }
+    return false
+  })
 }
 
 /**
@@ -265,8 +328,68 @@ export async function restoreImageFromReference(
 }
 
 /**
- * Convert image blocks in message content to reference blocks
- * Returns the converted content and replacement records
+ * Convert a base64 document block to a reference block
+ * Stores the document to cache and returns a lightweight reference
+ */
+export async function convertDocumentBlockToReference(
+  block: {
+    type: 'document'
+    source: { type: 'base64'; data: string; media_type: string }
+  },
+  options: {
+    sessionId: string
+  },
+): Promise<DocumentReferenceBlock> {
+  const { data, media_type } = block.source
+  const { sessionId } = options
+
+  const path = await storeImageToCache(data, media_type, sessionId)
+  const summary = generateImageSummary(media_type, data.length)
+
+  return {
+    type: 'document_reference',
+    path,
+    summary,
+    metadata: {
+      media_type,
+      original_size_bytes: data.length,
+    },
+    original_type: 'tool_result_document',
+  }
+}
+
+/**
+ * Restore a document reference block to a base64 document block
+ * Used before sending to API
+ */
+export async function restoreDocumentFromReference(
+  ref: DocumentReferenceBlock,
+): Promise<{
+  type: 'document'
+  source: { type: 'base64'; data: string; media_type: string }
+} | null> {
+  try {
+    const data = await readFile(ref.path, 'base64')
+    return {
+      type: 'document',
+      source: {
+        type: 'base64',
+        data,
+        media_type: ref.metadata.media_type,
+      },
+    }
+  } catch (error) {
+    console.error(`Failed to restore document from reference: ${ref.path}`, error)
+    return null
+  }
+}
+
+/**
+ * Convert media blocks in message content to reference blocks.
+ * Handles both top-level image/document blocks AND nested ones inside
+ * tool_result content arrays — the same pattern stripImagesFromMessages
+ * uses in compact.ts.
+ * Returns the converted content and replacement records.
  */
 export async function convertMessageImageBlocks(
   content: unknown[],
@@ -282,36 +405,91 @@ export async function convertMessageImageBlocks(
   for (let i = 0; i < convertedContent.length; i++) {
     const block = convertedContent[i]
 
-    // Only process base64 image blocks
-    if (!isImageBlock(block)) continue
+    // Top-level base64 image block
+    if (isImageBlock(block)) {
+      if (isImageReferenceBlock(block)) continue
+      const reference = await convertImageBlockToReference(
+        block as { type: 'image'; source: { type: 'base64'; data: string; media_type: string } },
+        { sessionId },
+      )
+      convertedContent[i] = reference
+      replacements.push({
+        kind: 'image-reference',
+        toolUseId,
+        blockIndex: i,
+        replacement: reference,
+      })
+      continue
+    }
 
-    // Check if it's already a reference (skip if so)
-    if (isImageReferenceBlock(block)) continue
+    // Top-level base64 document block
+    if (isDocumentBlock(block)) {
+      if (isDocumentReferenceBlock(block)) continue
+      const reference = await convertDocumentBlockToReference(
+        block as { type: 'document'; source: { type: 'base64'; data: string; media_type: string } },
+        { sessionId },
+      )
+      convertedContent[i] = reference
+      replacements.push({
+        kind: 'document-reference',
+        toolUseId,
+        blockIndex: i,
+        replacement: reference,
+      })
+      continue
+    }
 
-    // Convert base64 image to reference
-    const reference = await convertImageBlockToReference(
-      block as { type: 'image'; source: { type: 'base64'; data: string; media_type: string } },
-      { sessionId },
-    )
-
-    // Replace the block
-    convertedContent[i] = reference
-
-    // Record the replacement for resume
-    replacements.push({
-      kind: 'image-reference',
-      toolUseId,
-      blockIndex: i,
-      replacement: reference,
-    })
+    // Nested media inside tool_result content arrays
+    if (isToolResultBlock(block)) {
+      let hasReplacement = false
+      const newToolContent = await Promise.all(
+        block.content.map(async (item, subIndex) => {
+          if (isImageBlock(item)) {
+            hasReplacement = true
+            const reference = await convertImageBlockToReference(
+              item as { type: 'image'; source: { type: 'base64'; data: string; media_type: string } },
+              { sessionId },
+            )
+            replacements.push({
+              kind: 'image-reference',
+              toolUseId,
+              blockIndex: i,
+              subIndex,
+              replacement: reference,
+            })
+            return reference
+          }
+          if (isDocumentBlock(item)) {
+            hasReplacement = true
+            const reference = await convertDocumentBlockToReference(
+              item as { type: 'document'; source: { type: 'base64'; data: string; media_type: string } },
+              { sessionId },
+            )
+            replacements.push({
+              kind: 'document-reference',
+              toolUseId,
+              blockIndex: i,
+              subIndex,
+              replacement: reference,
+            })
+            return reference
+          }
+          return item
+        }),
+      )
+      if (hasReplacement) {
+        convertedContent[i] = { ...block, content: newToolContent }
+      }
+    }
   }
 
   return { content: convertedContent, replacements }
 }
 
 /**
- * Restore image reference blocks to base64 image blocks in message content
- * Returns the restored content
+ * Restore media reference blocks to base64 blocks in message content.
+ * Handles both top-level and nested (inside tool_result) references.
+ * Returns the restored content.
  */
 export async function restoreMessageImageBlocks(
   content: unknown[],
@@ -321,23 +499,104 @@ export async function restoreMessageImageBlocks(
   for (let i = 0; i < restoredContent.length; i++) {
     const block = restoredContent[i]
 
-    // Only process image reference blocks
-    if (!isImageReferenceBlock(block)) continue
+    // Top-level image reference
+    if (isImageReferenceBlock(block)) {
+      const restored = await restoreImageFromReference(block as ImageReferenceBlock)
+      if (restored) {
+        restoredContent[i] = restored
+      } else {
+        const ref = block as ImageReferenceBlock
+        restoredContent[i] = { type: 'text', text: `[Image: ${ref.summary}]` }
+      }
+      continue
+    }
 
-    // Try to restore from reference
-    const restored = await restoreImageFromReference(block as ImageReferenceBlock)
+    // Top-level document reference
+    if (isDocumentReferenceBlock(block)) {
+      const restored = await restoreDocumentFromReference(block as DocumentReferenceBlock)
+      if (restored) {
+        restoredContent[i] = restored
+      } else {
+        const ref = block as DocumentReferenceBlock
+        restoredContent[i] = { type: 'text', text: `[Document: ${ref.summary}]` }
+      }
+      continue
+    }
 
-    if (restored) {
-      restoredContent[i] = restored
-    } else {
-      // Fallback: replace with text showing the summary
-      const ref = block as ImageReferenceBlock
-      restoredContent[i] = {
-        type: 'text',
-        text: `[Image: ${ref.summary}]`,
+    // Nested references inside tool_result content arrays
+    if (isToolResultBlock(block)) {
+      let hasReference = false
+      const newToolContent = await Promise.all(
+        block.content.map(async (item) => {
+          if (isImageReferenceBlock(item)) {
+            hasReference = true
+            const restored = await restoreImageFromReference(item as ImageReferenceBlock)
+            return restored ?? { type: 'text', text: `[Image: ${(item as ImageReferenceBlock).summary}]` }
+          }
+          if (isDocumentReferenceBlock(item)) {
+            hasReference = true
+            const restored = await restoreDocumentFromReference(item as DocumentReferenceBlock)
+            return restored ?? { type: 'text', text: `[Document: ${(item as DocumentReferenceBlock).summary}]` }
+          }
+          return item
+        }),
+      )
+      if (hasReference) {
+        restoredContent[i] = { ...block, content: newToolContent }
       }
     }
   }
 
   return restoredContent
+}
+
+/**
+ * Strip large base64 data from toolUseResult metadata before persisting to session.
+ * toolUseResult is a side-channel copy of the raw tool output (used for UI/search),
+ * not part of message.content, so convertMessageImageBlocks doesn't touch it.
+ * When a tool (especially MCP) returns an image/document, the entire base64 payload
+ * ends up here redundantly — sometimes 3+ MB for a single PNG.
+ *
+ * For image/document toolUseResults, we replace the base64 data with a reference
+ * to the already-cached file (created by convertMessageImageBlocks on the content
+ * side). This keeps the type/metadata intact for UI display while eliminating the
+ * redundant large data.
+ */
+export function stripToolUseResultMedia(
+  toolUseResult: unknown,
+): unknown {
+  if (typeof toolUseResult !== 'object' || toolUseResult === null) return toolUseResult
+  const obj = toolUseResult as Record<string, unknown>
+
+  // Handle { type: 'image', file: { base64: '...', type: 'image/png', ... } }
+  if (obj.type === 'image' && typeof obj.file === 'object' && obj.file !== null) {
+    const fileObj = obj.file as Record<string, unknown>
+    if (typeof fileObj.base64 === 'string' && fileObj.base64.length > 10000) {
+      return {
+        ...obj,
+        file: {
+          ...fileObj,
+          base64: `[REMOVED: ${fileObj.type || 'image'} base64 data (${Math.round(fileObj.base64.length / 1024)}KB) stripped for session storage]`,
+          originalSize: fileObj.base64.length,
+        },
+      }
+    }
+  }
+
+  // Handle { type: 'document', file: { base64: '...', type: 'application/pdf', ... } }
+  if (obj.type === 'document' && typeof obj.file === 'object' && obj.file !== null) {
+    const fileObj = obj.file as Record<string, unknown>
+    if (typeof fileObj.base64 === 'string' && fileObj.base64.length > 10000) {
+      return {
+        ...obj,
+        file: {
+          ...fileObj,
+          base64: `[REMOVED: ${fileObj.type || 'document'} base64 data (${Math.round(fileObj.base64.length / 1024)}KB) stripped for session storage]`,
+          originalSize: fileObj.base64.length,
+        },
+      }
+    }
+  }
+
+  return toolUseResult
 }

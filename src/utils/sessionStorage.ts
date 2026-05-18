@@ -24,6 +24,7 @@ import {
 import {
   type ImageReplacementRecord,
   convertMessageImageBlocks,
+  stripToolUseResultMedia,
 } from 'src/utils/imageReferenceStorage.js'
 import {
   getOriginalCwd,
@@ -1081,6 +1082,23 @@ class Project {
           }
         }
 
+        // Strip large base64 data from toolUseResult metadata field.
+        // This field holds a redundant copy of image/document tool outputs
+        // that can balloon session files by 3+ MB per image.
+        if (
+          processedMessage.type === 'user' &&
+          'toolUseResult' in processedMessage &&
+          processedMessage.toolUseResult !== undefined
+        ) {
+          const stripped = stripToolUseResultMedia(processedMessage.toolUseResult)
+          if (stripped !== processedMessage.toolUseResult) {
+            processedMessage = {
+              ...processedMessage,
+              toolUseResult: stripped,
+            }
+          }
+        }
+
         const transcriptMessage: TranscriptMessage = {
           parentUuid: isCompactBoundary ? null : effectiveParentUuid,
           logicalParentUuid: isCompactBoundary ? parentUuid : undefined,
@@ -1117,9 +1135,10 @@ class Project {
       if (imageReplacements.length > 0) {
         await this.insertContentReplacement(
           imageReplacements.map(r => ({
-            kind: 'image-reference' as const,
+            kind: r.kind,
             toolUseId: r.toolUseId,
             blockIndex: r.blockIndex,
+            subIndex: r.subIndex,
             replacement: r.replacement,
           })),
           agentId,

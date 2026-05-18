@@ -23,8 +23,12 @@ import { sanitizeToolNameForAnalytics } from 'src/services/analytics/metadata.js
 import type { AgentId } from 'src/types/ids.js'
 import {
   type ImageReferenceBlock,
+  type DocumentReferenceBlock,
   isImageReferenceBlock,
+  isDocumentReferenceBlock,
+  isToolResultBlock,
   restoreImageFromReference,
+  restoreDocumentFromReference,
 } from 'src/utils/imageReferenceStorage.js'
 import { companionIntroText } from '../buddy/prompt.js'
 import { NO_CONTENT_MESSAGE } from '../constants/messages.js'
@@ -2001,22 +2005,68 @@ function restoreImageReferencesInContent(
 ): ContentBlockParam[] {
   return content.map(block => {
     if (isImageReferenceBlock(block)) {
-      // For now, return a placeholder text block
-      // The actual async restoration should happen in a pre-API hook
-      // This is a fallback for synchronous code paths
+      if (block.metadata.original_size_bytes > RESTORE_MEDIA_SIZE_THRESHOLD) {
+        return {
+          type: 'text',
+          text: `[Image: ${block.summary}]`,
+        } as TextBlockParam
+      }
       return {
         type: 'text',
         text: `[Image: ${block.summary}]`,
       } as TextBlockParam
+    }
+    if (isDocumentReferenceBlock(block)) {
+      if ((block as DocumentReferenceBlock).metadata.original_size_bytes > RESTORE_MEDIA_SIZE_THRESHOLD) {
+        return {
+          type: 'text',
+          text: `[Document: ${(block as DocumentReferenceBlock).summary}]`,
+        } as TextBlockParam
+      }
+      return {
+        type: 'text',
+        text: `[Document: ${(block as DocumentReferenceBlock).summary}]`,
+      } as TextBlockParam
+    }
+    // Handle nested references inside tool_result
+    if (isToolResultBlock(block) && Array.isArray(block.content)) {
+      const restoredNested = (block.content as ContentBlockParam[]).map(item => {
+        if (isImageReferenceBlock(item)) {
+          const ref = item as ImageReferenceBlock
+          if (ref.metadata.original_size_bytes > RESTORE_MEDIA_SIZE_THRESHOLD) {
+            return { type: 'text', text: `[Image: ${ref.summary}]` } as TextBlockParam
+          }
+          return { type: 'text', text: `[Image: ${ref.summary}]` } as TextBlockParam
+        }
+        if (isDocumentReferenceBlock(item)) {
+          const ref = item as DocumentReferenceBlock
+          if (ref.metadata.original_size_bytes > RESTORE_MEDIA_SIZE_THRESHOLD) {
+            return { type: 'text', text: `[Document: ${ref.summary}]` } as TextBlockParam
+          }
+          return { type: 'text', text: `[Document: ${ref.summary}]` } as TextBlockParam
+        }
+        return item as ContentBlockParam
+      })
+      return { ...block, content: restoredNested } as ContentBlockParam
     }
     return block
   })
 }
 
 /**
- * Async version: Restore image_reference blocks to base64 image blocks.
+ * Async version: Restore image_reference/document_reference blocks to base64 blocks.
  * Should be called before sending messages to API.
+ *
+ * Images/documents larger than RESTORE_MEDIA_SIZE_THRESHOLD bytes are NOT
+ * restored to base64 — instead they become a text placeholder describing
+ * what was there. This prevents a single large image (3+ MB) from causing
+ * 413 "payload too large" errors when the API proxy has a request body
+ * size limit. The model still receives a description so it knows an image
+ * existed, and compact's stripImagesFromMessages handles image_reference
+ * blocks as well.
  */
+const RESTORE_MEDIA_SIZE_THRESHOLD = 1024 * 1024 // 1 MB
+
 export async function restoreImageReferencesInMessages(
   messages: (UserMessage | AssistantMessage)[],
 ): Promise<(UserMessage | AssistantMessage)[]> {
@@ -2030,21 +2080,84 @@ export async function restoreImageReferencesInMessages(
         let hasChanges = false
 
         for (const block of content) {
+          // Top-level image reference — restore if small, placeholder if large
           if (isImageReferenceBlock(block)) {
-            const restored = await restoreImageFromReference(block)
-            if (restored) {
-              restoredContent.push(restored)
-            } else {
-              // Fallback to text if image file not found
+            hasChanges = true
+            if (block.metadata.original_size_bytes > RESTORE_MEDIA_SIZE_THRESHOLD) {
               restoredContent.push({
                 type: 'text',
                 text: `[Image: ${block.summary}]`,
               } as TextBlockParam)
+            } else {
+              const restored = await restoreImageFromReference(block)
+              if (restored) {
+                restoredContent.push(restored)
+              } else {
+                restoredContent.push({
+                  type: 'text',
+                  text: `[Image: ${block.summary}]`,
+                } as TextBlockParam)
+              }
             }
-            hasChanges = true
-          } else {
-            restoredContent.push(block)
+            continue
           }
+
+          // Top-level document reference — same threshold logic
+          if (isDocumentReferenceBlock(block)) {
+            hasChanges = true
+            if (block.metadata.original_size_bytes > RESTORE_MEDIA_SIZE_THRESHOLD) {
+              restoredContent.push({
+                type: 'text',
+                text: `[Document: ${block.summary}]`,
+              } as TextBlockParam)
+            } else {
+              const restored = await restoreDocumentFromReference(block)
+              if (restored) {
+                restoredContent.push(restored)
+              } else {
+                restoredContent.push({
+                  type: 'text',
+                  text: `[Document: ${block.summary}]`,
+                } as TextBlockParam)
+              }
+            }
+            continue
+          }
+
+          // Nested references inside tool_result content arrays
+          if (isToolResultBlock(block) && Array.isArray(block.content)) {
+            let nestedHasChanges = false
+            const restoredNested = await Promise.all(
+              (block.content as ContentBlockParam[]).map(async item => {
+                if (isImageReferenceBlock(item)) {
+                  nestedHasChanges = true
+                  const ref = item as ImageReferenceBlock
+                  if (ref.metadata.original_size_bytes > RESTORE_MEDIA_SIZE_THRESHOLD) {
+                    return { type: 'text', text: `[Image: ${ref.summary}]` } as ContentBlockParam
+                  }
+                  const restored = await restoreImageFromReference(ref)
+                  return restored ?? { type: 'text', text: `[Image: ${ref.summary}]` } as ContentBlockParam
+                }
+                if (isDocumentReferenceBlock(item)) {
+                  nestedHasChanges = true
+                  const ref = item as DocumentReferenceBlock
+                  if (ref.metadata.original_size_bytes > RESTORE_MEDIA_SIZE_THRESHOLD) {
+                    return { type: 'text', text: `[Document: ${ref.summary}]` } as ContentBlockParam
+                  }
+                  const restored = await restoreDocumentFromReference(ref)
+                  return restored ?? { type: 'text', text: `[Document: ${ref.summary}]` } as ContentBlockParam
+                }
+                return item as ContentBlockParam
+              }),
+            )
+            if (nestedHasChanges) {
+              hasChanges = true
+              restoredContent.push({ ...block, content: restoredNested } as ContentBlockParam)
+              continue
+            }
+          }
+
+          restoredContent.push(block)
         }
 
         if (hasChanges) {
