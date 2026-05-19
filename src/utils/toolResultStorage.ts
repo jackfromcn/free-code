@@ -465,6 +465,8 @@ export function provisionContentReplacementState(
   return createContentReplacementState()
 }
 
+import type { ImageReferenceBlock, DocumentReferenceBlock } from 'src/utils/imageReferenceStorage.js'
+
 /**
  * Serializable record of one content-replacement decision. Written to the
  * transcript as a ContentReplacementEntry so decisions survive resume.
@@ -475,15 +477,40 @@ export function provisionContentReplacementState(
  * derived on resume so code changes to the preview template, size formatting,
  * or path layout can't silently break prompt cache.
  */
-export type ContentReplacementRecord = {
-  kind: 'tool-result'
-  toolUseId: string
-  replacement: string
-}
+export type ContentReplacementRecord =
+  | {
+      kind: 'tool-result'
+      toolUseId: string
+      replacement: string
+    }
+  | {
+      kind: 'image-reference'
+      toolUseId: string
+      blockIndex: number
+      subIndex?: number
+      replacement: ImageReferenceBlock
+    }
+  | {
+      kind: 'document-reference'
+      toolUseId: string
+      blockIndex: number
+      subIndex?: number
+      replacement: DocumentReferenceBlock
+    }
 
 export type ToolResultReplacementRecord = Extract<
   ContentReplacementRecord,
   { kind: 'tool-result' }
+>
+
+export type ImageReferenceReplacementRecord = Extract<
+  ContentReplacementRecord,
+  { kind: 'image-reference' }
+>
+
+export type DocumentReferenceReplacementRecord = Extract<
+  ContentReplacementRecord,
+  { kind: 'document-reference' }
 >
 
 type ToolResultCandidate = {

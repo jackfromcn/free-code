@@ -159,9 +159,17 @@ export function stripImagesFromMessages(messages: Message[]): Message[] {
         hasMediaBlock = true
         return [{ type: 'text' as const, text: '[image]' }]
       }
+      if (block.type === 'image_reference') {
+        hasMediaBlock = true
+        return [{ type: 'text' as const, text: `[image: ${(block as Record<string,unknown>).summary ?? ''}]` }]
+      }
       if (block.type === 'document') {
         hasMediaBlock = true
         return [{ type: 'text' as const, text: '[document]' }]
+      }
+      if (block.type === 'document_reference') {
+        hasMediaBlock = true
+        return [{ type: 'text' as const, text: `[document: ${(block as Record<string,unknown>).summary ?? ''}]` }]
       }
       // Also strip images/documents nested inside tool_result content arrays
       if (block.type === 'tool_result' && Array.isArray(block.content)) {
@@ -171,9 +179,17 @@ export function stripImagesFromMessages(messages: Message[]): Message[] {
             toolHasMedia = true
             return { type: 'text' as const, text: '[image]' }
           }
+          if (item.type === 'image_reference') {
+            toolHasMedia = true
+            return { type: 'text' as const, text: `[image: ${(item as Record<string,unknown>).summary ?? ''}]` }
+          }
           if (item.type === 'document') {
             toolHasMedia = true
             return { type: 'text' as const, text: '[document]' }
+          }
+          if (item.type === 'document_reference') {
+            toolHasMedia = true
+            return { type: 'text' as const, text: `[document: ${(item as Record<string,unknown>).summary ?? ''}]` }
           }
           return item
         })
