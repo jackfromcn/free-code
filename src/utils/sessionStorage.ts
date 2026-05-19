@@ -100,6 +100,7 @@ import {
   buildLargeToolResultMessage,
   isContentAlreadyCompacted,
   persistToolResult,
+  TOOL_RESULT_CLEARED_MESSAGE,
   type ContentReplacementRecord,
   TRANSCRIPT_TOOL_RESULT_PERSIST_THRESHOLD,
 } from './toolResultStorage.js'
@@ -230,6 +231,28 @@ export async function buildTranscriptToolResultReplacement(
   }
 }
 
+function shouldClearTranscriptToolUseResult(toolUseResult: unknown): boolean {
+  if (toolUseResult == null) return false
+  try {
+    return jsonStringify(toolUseResult).length > TRANSCRIPT_TOOL_RESULT_PERSIST_THRESHOLD
+  } catch {
+    return false
+  }
+}
+
+function sanitizeTranscriptToolUseResult(message: UserMessage): UserMessage {
+  if (message.toolUseResult === undefined) {
+    return message
+  }
+  if (!shouldClearTranscriptToolUseResult(message.toolUseResult)) {
+    return message
+  }
+  return {
+    ...message,
+    toolUseResult: TOOL_RESULT_CLEARED_MESSAGE,
+  }
+}
+
 export async function sanitizeTranscriptToolResultMessage(
   message: UserMessage,
 ): Promise<{
@@ -280,17 +303,20 @@ export async function sanitizeTranscriptToolResultMessage(
   )
 
   if (!changed) {
-    return { message, replacements: [] }
+    return {
+      message: sanitizeTranscriptToolUseResult(message),
+      replacements: [],
+    }
   }
 
   return {
-    message: {
+    message: sanitizeTranscriptToolUseResult({
       ...message,
       message: {
         ...message.message,
         content,
       },
-    },
+    }),
     replacements,
   }
 }

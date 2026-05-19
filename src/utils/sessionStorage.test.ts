@@ -11,6 +11,7 @@ import {
 } from './sessionStorage.js'
 import {
   PERSISTED_OUTPUT_TAG,
+  TOOL_RESULT_CLEARED_MESSAGE,
   TRANSCRIPT_TOOL_RESULT_PERSIST_THRESHOLD,
 } from './toolResultStorage.js'
 
@@ -144,6 +145,38 @@ describe('sanitizeTranscriptToolResultMessage', () => {
       expect(first?.type).toBe('tool_result')
       if (first && first.type === 'tool_result' && typeof first.content === 'string') {
         expect(first.content.startsWith(PERSISTED_OUTPUT_TAG)).toBe(true)
+      }
+    }
+  })
+
+  test('clears oversized top-level toolUseResult while keeping tool_result message compacted', async () => {
+    const largeContent = 'z'.repeat(TRANSCRIPT_TOOL_RESULT_PERSIST_THRESHOLD + 1500)
+    const message = createUserMessage({
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'call_large_top_level',
+          content: 'The file /tmp/example.ts has been updated successfully.',
+        },
+      ],
+      toolUseResult: {
+        originalFile: largeContent,
+        oldString: 'before',
+        newString: 'after',
+      },
+    })
+
+    const result = await sanitizeTranscriptToolResultMessage(message)
+
+    expect(result.replacements).toHaveLength(0)
+    expect(result.message.toolUseResult).toBe(TOOL_RESULT_CLEARED_MESSAGE)
+    const blocks = result.message.message.content
+    expect(Array.isArray(blocks)).toBe(true)
+    if (Array.isArray(blocks)) {
+      const first = blocks[0]
+      expect(first?.type).toBe('tool_result')
+      if (first && first.type === 'tool_result') {
+        expect(first.content).toBe('The file /tmp/example.ts has been updated successfully.')
       }
     }
   })
