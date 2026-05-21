@@ -56,6 +56,19 @@ export function getAddressFamily(options: LookupOptions): 0 | 4 | 6 {
 
 type EnvLike = Record<string, string | undefined>
 
+function isLocalLoopbackUrl(urlString: string): boolean {
+  try {
+    const hostname = new URL(urlString).hostname.toLowerCase()
+    return (
+      hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname === '::1'
+    )
+  } catch {
+    return false
+  }
+}
+
 /**
  * Get the active proxy URL if one is configured
  * Prefers lowercase variants over uppercase (https_proxy > HTTPS_PROXY > http_proxy > HTTP_PROXY)
@@ -305,9 +318,21 @@ export function getProxyFetchOptions(opts?: { forAnthropicAPI?: boolean }): {
   }
 
   const proxyUrl = getProxyUrl()
+  const anthropicBaseUrl = process.env.ANTHROPIC_BASE_URL
 
   // If we have a proxy, use the proxy agent (which includes mTLS config)
   if (proxyUrl) {
+    if (
+      opts?.forAnthropicAPI &&
+      anthropicBaseUrl &&
+      (shouldBypassProxy(anthropicBaseUrl) ||
+        isLocalLoopbackUrl(anthropicBaseUrl))
+    ) {
+      logForDebugging(
+        `[proxy] Bypassing proxy for Anthropic API base URL: ${anthropicBaseUrl}`,
+      )
+      return { ...base, ...getTLSFetchOptions() }
+    }
     if (typeof Bun !== 'undefined') {
       return { ...base, proxy: proxyUrl, ...getTLSFetchOptions() }
     }
