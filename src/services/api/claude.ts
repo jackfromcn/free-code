@@ -2348,15 +2348,26 @@ async function* queryModel(
       // BetaMessageStream had the first check in _endRequest() but the raw Stream
       // does not - without it the generator silently returns no assistant messages,
       // causing "Execution error" in -p mode.
-      // Note: We must check stopReason to avoid false positives. For example, with
-      // structured output (--json-schema), the model calls a StructuredOutput tool
-      // on turn 1, then on turn 2 responds with end_turn and no content blocks.
-      // That's a legitimate empty response, not an incomplete stream.
-      if (!partialMessage || (newMessages.length === 0 && !stopReason)) {
+      // Note: Interactive sessions intentionally allow end_turn-with-zero-content
+      // because some tool-only / task-notification turns are legitimately silent.
+      // In non-interactive print/SDK flows, however, proxies can terminate the
+      // stream with end_turn but omit all content blocks while the non-streaming
+      // endpoint still returns the expected text. Falling back here preserves
+      // historical CLI behavior without changing the interactive path.
+      const noAssistantMessages = newMessages.length === 0
+      const shouldFallbackForEmptyNonInteractiveResponse =
+        options.isNonInteractiveSession && partialMessage && noAssistantMessages
+      if (
+        !partialMessage ||
+        (noAssistantMessages &&
+          (!stopReason || shouldFallbackForEmptyNonInteractiveResponse))
+      ) {
         logForDebugging(
           !partialMessage
             ? 'Stream completed without receiving message_start event - triggering non-streaming fallback'
-            : 'Stream completed with message_start but no content blocks completed - triggering non-streaming fallback',
+            : shouldFallbackForEmptyNonInteractiveResponse
+              ? 'Non-interactive stream completed with end_turn but no assistant content blocks - triggering non-streaming fallback'
+              : 'Stream completed with message_start but no content blocks completed - triggering non-streaming fallback',
           { level: 'error' },
         )
         logEvent('tengu_stream_no_events', {
