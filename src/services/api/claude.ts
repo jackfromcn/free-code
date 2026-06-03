@@ -101,6 +101,7 @@ import {
   extractQuotaStatusFromHeaders,
 } from '../claudeAiLimits.js'
 import { getAPIContextManagement } from '../compact/apiMicrocompact.js'
+import { stripImagesFromMessages } from '../compact/compact.js'
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
@@ -2637,6 +2638,24 @@ async function* queryModel(
       // request's ID from the error header instead.
       const failedRequestId =
         (errorFromRetry.originalError as APIError).requestID ?? 'unknown'
+
+      // If the 404 is about unsupported image input, strip images from the
+      // conversation so the non-streaming fallback (and subsequent turns) can
+      // succeed.  Providers that don't support vision return:
+      //   "No endpoints found that support image input"
+      const originalMessage = (
+        errorFromRetry.originalError as APIError
+      ).message.toLowerCase()
+      if (originalMessage.includes('no endpoints found that support image input')) {
+        logForDebugging(
+          '404 due to unsupported image input — stripping images from messages',
+          { level: 'warn' },
+        )
+        messagesForAPI = stripImagesFromMessages(
+          messagesForAPI as Message[],
+        ) as unknown as (UserMessage | AssistantMessage)[]
+      }
+
       logForDebugging(
         'Streaming endpoint returned 404, falling back to non-streaming mode',
         { level: 'warn' },
