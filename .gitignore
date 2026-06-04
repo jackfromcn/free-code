@@ -5,3 +5,5 @@ cli-dev
 openclaw/
 .omx/
 .claude/
+AGENTS.md
+CLAUDE.md
