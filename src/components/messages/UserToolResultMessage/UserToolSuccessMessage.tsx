@@ -8,6 +8,7 @@ import { filterToolProgressMessages, type Tool, type Tools } from '../../../Tool
 import type { NormalizedUserMessage, ProgressMessage } from '../../../types/message.js';
 import { deleteClassifierApproval, getClassifierApproval, getYoloClassifierApproval } from '../../../utils/classifierApprovals.js';
 import type { buildMessageLookups } from '../../../utils/messages.js';
+import { TOOL_RESULT_CLEARED_MESSAGE } from '../../../utils/toolResultStorage.js';
 import { MessageResponse } from '../../MessageResponse.js';
 import { HookProgressMessage } from '../HookProgressMessage.js';
 type Props = {
@@ -50,6 +51,9 @@ export function UserToolSuccessMessage({
     deleteClassifierApproval(toolUseID);
   }, [toolUseID]);
   if (!message.toolUseResult || !tool) {
+    return null;
+  }
+  if (message.toolUseResult === TOOL_RESULT_CLEARED_MESSAGE) {
     return null;
   }
 
