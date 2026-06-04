@@ -149,7 +149,7 @@ describe('sanitizeTranscriptToolResultMessage', () => {
     }
   })
 
-  test('clears oversized top-level toolUseResult while keeping tool_result message compacted', async () => {
+  test('drops oversized top-level toolUseResult while keeping tool_result message compacted', async () => {
     const largeContent = 'z'.repeat(TRANSCRIPT_TOOL_RESULT_PERSIST_THRESHOLD + 1500)
     const message = createUserMessage({
       content: [
@@ -169,7 +169,7 @@ describe('sanitizeTranscriptToolResultMessage', () => {
     const result = await sanitizeTranscriptToolResultMessage(message)
 
     expect(result.replacements).toHaveLength(0)
-    expect(result.message.toolUseResult).toBe(TOOL_RESULT_CLEARED_MESSAGE)
+    expect(result.message.toolUseResult).toBeUndefined()
     const blocks = result.message.message.content
     expect(Array.isArray(blocks)).toBe(true)
     if (Array.isArray(blocks)) {
@@ -179,6 +179,24 @@ describe('sanitizeTranscriptToolResultMessage', () => {
         expect(first.content).toBe('The file /tmp/example.ts has been updated successfully.')
       }
     }
+  })
+
+  test('keeps legacy cleared toolUseResult sentinel under the persistence threshold', async () => {
+    const message = createUserMessage({
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'call_legacy_cleared_top_level',
+          content: 'Output too large; see persisted output reference.',
+        },
+      ],
+      toolUseResult: TOOL_RESULT_CLEARED_MESSAGE,
+    })
+
+    const result = await sanitizeTranscriptToolResultMessage(message)
+
+    expect(result.replacements).toHaveLength(0)
+    expect(result.message.toolUseResult).toBe(TOOL_RESULT_CLEARED_MESSAGE)
   })
 
   test('leaves small tool_result unchanged', async () => {

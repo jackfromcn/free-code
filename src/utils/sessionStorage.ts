@@ -100,7 +100,6 @@ import {
   buildLargeToolResultMessage,
   isContentAlreadyCompacted,
   persistToolResult,
-  TOOL_RESULT_CLEARED_MESSAGE,
   type ContentReplacementRecord,
   TRANSCRIPT_TOOL_RESULT_PERSIST_THRESHOLD,
 } from './toolResultStorage.js'
@@ -247,9 +246,9 @@ function sanitizeTranscriptToolUseResult(message: UserMessage): UserMessage {
   if (!shouldClearTranscriptToolUseResult(message.toolUseResult)) {
     return message
   }
+  const { toolUseResult: _cleared, ...messageWithoutToolUseResult } = message
   return {
-    ...message,
-    toolUseResult: TOOL_RESULT_CLEARED_MESSAGE,
+    ...messageWithoutToolUseResult,
   }
 }
 
